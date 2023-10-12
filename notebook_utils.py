@@ -14,17 +14,14 @@ import seaborn as sns
 import torch
 from torch import cuda, nn
 
-from nanoGPT.config import train_shakespeare_char
+from nanoGPT.config import train_shakespeare_char, train_llama
 from nanoGPT.model import GPTConfig
+import datetime
 
-try:
-    from train_ipu import run_training
+# from train import run_training
+from train_llm import run_training
 
-    device = "ipu"
-except ImportError:  # not on IPU...
-    from train import run_training
-
-    device = "cuda" if cuda.is_available() else "cpu"
+device = "cuda" if cuda.is_available() else "cpu"
 
 
 def config_dict_from_module(module) -> Dict[str, Any]:
@@ -39,10 +36,13 @@ def extract_model_params(config):
     }
 
 
-_general_config_dict = config_dict_from_module(train_shakespeare_char)
+_general_config_dict = config_dict_from_module(
+    train_llama
+    # train_shakespeare_char
+)  # train_shakespeare_char
 _general_config_dict["compile"] = False  # We'll do this in the notebook when necessary
 _model_config_dict = extract_model_params(_general_config_dict)
-_model_config_dict["vocab_size"] = 65  # Generated from data/shakespeare_char/prepare.py
+# _model_config_dict["vocab_size"] = 65  # Generated from data/shakespeare_char/prepare.py
 config = GPTConfig(**_model_config_dict)
 for key, value in _general_config_dict.items():
     setattr(config, key, value)
@@ -108,12 +108,14 @@ class NanoGPTTokenizer:
 
 def plot(df: pd.DataFrame, name: str) -> matplotlib.axes.Axes:
     sns.set_theme()
+    print(df)
+    print(name)
     ax = sns.lineplot(
         data=df,
         x="Steps",
         y="Loss",
         style="Train/Valid",
-        label=name,
+        # label="Model",
         solid_joinstyle="miter",
         solid_capstyle="butt",
         linewidth=1.5,
@@ -131,10 +133,50 @@ def plot(df: pd.DataFrame, name: str) -> matplotlib.axes.Axes:
     ax.legend(
         entries.values(), entries.keys(), bbox_to_anchor=(1.05, 1), loc="upper left"
     )
+    time_ = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M")
+    fig = ax.get_figure()
+    fig.savefig(f"plot_{time_}_{name}.pdf")
     return ax
 
 
-def train(model: nn.Module, **config_overrides: Any) -> pd.DataFrame:
+def plot_file(df: pd.DataFrame, name: str) -> matplotlib.axes.Axes:
+    if int(os.environ.get("RANK", 0)) != 0:
+        return
+    for key in ["training", "validation"]:
+        plt.figure()
+        df_ = df[df["Train/Valid"] == key]
+        sns.set_theme()
+        ax = sns.lineplot(
+            data=df_,
+            x="Steps",
+            y="Loss",
+            hue="Model",
+            # label="Model",
+            solid_joinstyle="miter",
+            solid_capstyle="butt",
+            linewidth=1.5,
+        )
+        ax.set(xlim=(0, None), ylim=(0.6, 6.0))
+
+        # remove duplicate legend entries
+        # entries = {}
+        # for h, l in zip(*ax.get_legend_handles_labels()):
+        #     if l not in entries:
+        #         entries[l] = h
+        # entries[""] = plt.Line2D([0], [0], marker="none", linestyle="none", color="none")
+        # entries["validation"] = entries.pop("validation")  # move to bottom
+        # entries["training"] = entries.pop("training")  # move to bottom
+        # ax.legend(
+        #     entries.values(), entries.keys(), bbox_to_anchor=(1.05, 1), loc="upper left"
+        # )
+        time_ = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M")
+        # fig = ax.get_figure()
+        # fig.savefig(f"plot_{time_}_{name}.pdf")
+        plt.savefig(f"plot_{time_}_{name}_{key}.pdf")
+    return ax
+
+
+def train(model: nn.Module, mode="notebook", **config_overrides: Any) -> pd.DataFrame:
     if device == "cpu":
         logging.warning(
             "CPU does not have sufficient FLOP/s for tractable training. "
@@ -175,4 +217,7 @@ def train(model: nn.Module, **config_overrides: Any) -> pd.DataFrame:
     valid_df["Train/Valid"] = "validation"
     df = pd.concat([train_df, valid_df])
     df["Model"] = experiment_name
-    plot(df, experiment_name)
+    if mode == "notebook":
+        plot(df, experiment_name)
+    else:
+        plot_file(df, experiment_name)
